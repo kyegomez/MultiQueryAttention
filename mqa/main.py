@@ -281,7 +281,7 @@ def flash_attn_fn(
         attn_bias = attn_bias[:, :, _s_q:, _s_k:]
 
     if attn_bias is not None:
-        raise NotImplementedError(f'attn_bias not implemented for flash attn.')
+        raise NotImplementedError('attn_bias not implemented for flash attn.')
 
     batch_size, seqlen = query.shape[:2]
 
@@ -477,11 +477,11 @@ def triton_flash_attn_fn(
 
     if dropout_p:
         raise NotImplementedError(
-            f'Dropout not implemented for attn_impl: triton.')
+            'Dropout not implemented for attn_impl: triton.')
 
     if needs_weights:
         raise NotImplementedError(
-            f'attn_impl: triton cannot return attn weights.')
+            'attn_impl: triton cannot return attn weights.')
 
     if key_padding_mask is not None:
         warnings.warn(
@@ -521,7 +521,7 @@ def triton_flash_attn_fn(
     return output, None, past_key_value
 
 
-class MultiheadAttention(nn.Module):
+class MultiHeadAttention(nn.Module):
     """Multi-head self attention.
 
     Using torch or triton attention implemetation enables user to also use
