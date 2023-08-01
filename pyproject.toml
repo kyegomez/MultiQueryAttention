@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "MQA"
+version = "0.1.0"
+description = "Multi Query Attention package"
+authors = ["kyegomez <kyegomez@github.com>"]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+torch = "^1.10.0"
+einops = "^0.3.2"
+flash-attn = "1.0.3.post0"
+triton = "2.0.0.dev20221202"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

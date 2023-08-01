@@ -128,39 +128,39 @@ NORM_CLASS_REGISTRY: Dict(str, Type[nn.Module]) = {
 
 
 
-def _reset_is_causal(num_query_tokens: int, num_key_tokens: int,
-                     original_is_causal: bool):
+def _reset_causal(num_query_tokens: int, num_key_tokens: int,
+                     original_causal: bool):
     # disable causal when it is not needed
     # necessary for flash & triton for generation with kv_cache
-    if original_is_causal and num_query_tokens != num_key_tokens:
+    if original_causal and num_query_tokens != num_key_tokens:
         if num_query_tokens != 1:
             raise NotImplementedError(
                 'MPT does not support query and key with different number of tokens, unless number of query tokens is 1.'
             )
         else:
             return False
-    return original_is_causal
+    return original_causal
 
 
 def scaled_multihead_dot_product_attention(
     query,
     key,
     value,
-    n_heads,
+    heads,
     past_key_value=None,
     softmax_scale=None,
-    attn_bias=None,
+    bias=None,
     key_padding_mask=None,
-    is_causal=False,
-    dropout_p=0.0,
+    causal=False,
+    dropout=0.0,
     training=False,
     needs_weights=False,
     multiquery=False,
 ):
-    q = rearrange(query, 'b s (h d) -> b h s d', h=n_heads)
-    kv_n_heads = 1 if multiquery else n_heads
-    k = rearrange(key, 'b s (h d) -> b h d s', h=kv_n_heads)
-    v = rearrange(value, 'b s (h d) -> b h s d', h=kv_n_heads)
+    q = rearrange(query, 'b s (h d) -> b h s d', h=heads)
+    kv_heads = 1 if multiquery else heads
+    k = rearrange(key, 'b s (h d) -> b h d s', h=kv_heads)
+    v = rearrange(value, 'b s (h d) -> b h s d', h=kv_heads)
 
     if past_key_value is not None:
         # attn_impl: flash & triton use kernels which expect input shape [b, s, h, d_head].
@@ -183,35 +183,35 @@ def scaled_multihead_dot_product_attention(
 
     attn_weight = q.matmul(k) * softmax_scale
 
-    if attn_bias is not None:
+    if bias is not None:
         # clamp to 0 necessary for torch 2.0 compile()
-        _s_q = max(0, attn_bias.size(2) - s_q)
-        _s_k = max(0, attn_bias.size(3) - s_k)
-        attn_bias = attn_bias[:, :, _s_q:, _s_k:]
+        _s_q = max(0, bias.size(2) - s_q)
+        _s_k = max(0, bias.size(3) - s_k)
+        bias = bias[:, :, _s_q:, _s_k:]
 
-        if (attn_bias.size(-1) != 1 and
-                attn_bias.size(-1) != s_k) or (attn_bias.size(-2) != 1 and
-                                               attn_bias.size(-2) != s_q):
+        if (bias.size(-1) != 1 and
+                bias.size(-1) != s_k) or (bias.size(-2) != 1 and
+                                               bias.size(-2) != s_q):
             raise RuntimeError(
-                f'attn_bias (shape: {attn_bias.shape}) is expected to broadcast to shape: {attn_weight.shape}.'
+                f'bias (shape: {bias.shape}) is expected to broadcast to shape: {attn_weight.shape}.'
             )
-        attn_weight = attn_weight + attn_bias
+        attn_weight = attn_weight + bias
 
     min_val = torch.finfo(q.dtype).min
 
     if key_padding_mask is not None:
-        if attn_bias is not None:
+        if bias is not None:
             warnings.warn(
                 'Propogating key_padding_mask to the attention module ' +\
                 'and applying it within the attention module can cause ' +\
                 'unneccessary computation/memory usage. Consider integrating ' +\
-                'into attn_bias once and passing that to each attention ' +\
+                'into bias once and passing that to each attention ' +\
                 'module instead.'
             )
         attn_weight = attn_weight.masked_fill(
             ~key_padding_mask.view((b, 1, 1, s_k)), min_val)
 
-    if is_causal and (not q.size(2) == 1):
+    if causal and (not q.size(2) == 1):
         s = max(s_q, s_k)
         causal_mask = attn_weight.new_ones(s, s, dtype=torch.float32)
         causal_mask = causal_mask.tril()
@@ -223,9 +223,9 @@ def scaled_multihead_dot_product_attention(
 
     attn_weight = torch.softmax(attn_weight, dim=-1)
 
-    if dropout_p:
+    if dropout:
         attn_weight = torch.nn.functional.dropout(attn_weight,
-                                                  p=dropout_p,
+                                                  p=dropout,
                                                   training=training,
                                                   inplace=True)
 
@@ -249,13 +249,13 @@ def flash_attn_fn(
     query,
     key,
     value,
-    n_heads,
+    heads,
     past_key_value=None,
     softmax_scale=None,
-    attn_bias=None,
+    bias=None,
     key_padding_mask=None,
-    is_causal=False,
-    dropout_p=0.0,
+    causal=False,
+    dropout=0.0,
     training=False,
     needs_weights=False,
     multiquery=False,
@@ -274,14 +274,14 @@ def flash_attn_fn(
 
         past_key_value = (key, value)
 
-    if attn_bias is not None:
+    if bias is not None:
         # clamp to 0 necessary for torch 2.0 compile()
-        _s_q = max(0, attn_bias.size(2) - query.size(1))
-        _s_k = max(0, attn_bias.size(3) - key.size(1))
-        attn_bias = attn_bias[:, :, _s_q:, _s_k:]
+        _s_q = max(0, bias.size(2) - query.size(1))
+        _s_k = max(0, bias.size(3) - key.size(1))
+        bias = bias[:, :, _s_q:, _s_k:]
 
-    if attn_bias is not None:
-        raise NotImplementedError('attn_bias not implemented for flash attn.')
+    if bias is not None:
+        raise NotImplementedError('bias not implemented for flash attn.')
 
     batch_size, seqlen = query.shape[:2]
 
@@ -291,28 +291,28 @@ def flash_attn_fn(
 
     query_unpad, indices_q, cu_seqlens_q, max_seqlen_q = bert_padding.unpad_input(
         query, query_padding_mask)
-    query_unpad = rearrange(query_unpad, 'nnz (h d) -> nnz h d', h=n_heads)
+    query_unpad = rearrange(query_unpad, 'nnz (h d) -> nnz h d', h=heads)
 
     key_unpad, _, cu_seqlens_k, max_seqlen_k = bert_padding.unpad_input(
         key, key_padding_mask)
     key_unpad = rearrange(key_unpad,
                           'nnz (h d) -> nnz h d',
-                          h=1 if multiquery else n_heads)
+                          h=1 if multiquery else heads)
 
     value_unpad, _, _, _ = bert_padding.unpad_input(value, key_padding_mask)
     value_unpad = rearrange(value_unpad,
                             'nnz (h d) -> nnz h d',
-                            h=1 if multiquery else n_heads)
+                            h=1 if multiquery else heads)
 
     if multiquery:
-        key_unpad = key_unpad.expand(key_unpad.size(0), n_heads,
+        key_unpad = key_unpad.expand(key_unpad.size(0), heads,
                                      key_unpad.size(-1))
-        value_unpad = value_unpad.expand(value_unpad.size(0), n_heads,
+        value_unpad = value_unpad.expand(value_unpad.size(0), heads,
                                          value_unpad.size(-1))
 
-    dropout_p = dropout_p if training else 0.0
+    dropout = dropout if training else 0.0
 
-    reset_is_causal = _reset_is_causal(query.size(1), key.size(1), is_causal)
+    reset_causal = _reset_causal(query.size(1), key.size(1), causal)
 
     output_unpad = flash_attn_interface.flash_attn_unpadded_func(
         query_unpad,
@@ -322,9 +322,9 @@ def flash_attn_fn(
         cu_seqlens_k,
         max_seqlen_q,
         max_seqlen_k,
-        dropout_p,
+        dropout,
         softmax_scale=softmax_scale,
-        causal=reset_is_causal,
+        causal=reset_causal,
         return_attn_probs=needs_weights)
 
     output = bert_padding.pad_input(
@@ -335,15 +335,15 @@ def flash_attn_fn(
 
 
 
-def attn_bias_shape(attn_impl, n_heads, seq_len, alibi, prefix_lm, causal,
+def attn_bias_shape(attn_impl, heads, seq_len, alibi, prefix_lm, causal,
                     use_sequence_id):
     if attn_impl == 'flash':
         return None
     elif attn_impl in ['torch', 'triton']:
         if alibi:
             if (prefix_lm or not causal) or use_sequence_id:
-                return (1, n_heads, seq_len, seq_len)
-            return (1, n_heads, 1, seq_len)
+                return (1, heads, seq_len, seq_len)
+            return (1, heads, 1, seq_len)
         elif prefix_lm or use_sequence_id:
             return (1, 1, seq_len, seq_len)
         return None
@@ -353,8 +353,8 @@ def attn_bias_shape(attn_impl, n_heads, seq_len, alibi, prefix_lm, causal,
 
 def build_attn_bias(
     attn_impl,
-    attn_bias,
-    n_heads,
+    bias,
+    heads,
     seq_len,
     causal=False,
     alibi=False,
@@ -365,40 +365,40 @@ def build_attn_bias(
     elif attn_impl in ['torch', 'triton']:
         if alibi:
             # in place add alibi to attn bias
-            device, dtype = attn_bias.device, attn_bias.dtype
-            attn_bias = attn_bias.add(
+            device, dtype = bias.device, bias.dtype
+            bias = bias.add(
                 build_alibi_bias(
-                    n_heads,
+                    heads,
                     seq_len,
                     full=not causal,
                     alibi_bias_max=alibi_bias_max,
                     device=device,
                     dtype=dtype,
                 ))
-        return attn_bias
+        return bias
     else:
         raise ValueError(f'{attn_impl=} is an invalid setting.')
 
 
 
 #helper helpers
-def gen_slopes(n_heads, alibi_bias_max=8, device=None):
-    _n_heads = 2**math.ceil(math.log2(n_heads))
-    m = torch.arange(1, _n_heads + 1, dtype=torch.float32, device=device)
-    m = m.mul(alibi_bias_max / _n_heads)
+def gen_slopes(heads, alibi_bias_max=8, device=None):
+    _heads = 2**math.ceil(math.log2(heads))
+    m = torch.arange(1, _heads + 1, dtype=torch.float32, device=device)
+    m = m.mul(alibi_bias_max / _heads)
     slopes = (1. / torch.pow(2, m))
 
-    if _n_heads != n_heads:
-        # if n_heads is not a power of two,
+    if _heads != heads:
+        # if heads is not a power of two,
         # Huggingface and FasterTransformer calculate slopes normally,
         # then return this strided concatenation of slopes
-        slopes = torch.concat([slopes[1::2], slopes[::2]])[:n_heads]
+        slopes = torch.concat([slopes[1::2], slopes[::2]])[:heads]
 
-    return slopes.view(1, n_heads, 1, 1)
+    return slopes.view(1, heads, 1, 1)
 
 
 def build_alibi_bias(
-    n_heads,
+    heads,
     seq_len,
     full=False,
     alibi_bias_max=8,
@@ -415,7 +415,7 @@ def build_alibi_bias(
                 1, 1, seq_len, 1)
         alibi_bias = alibi_bias.abs().mul(-1)
 
-    slopes = gen_slopes(n_heads, alibi_bias_max, device=device)
+    slopes = gen_slopes(heads, alibi_bias_max, device=device)
     alibi_bias = alibi_bias * slopes
     return alibi_bias.to(dtype=dtype)
 
@@ -426,13 +426,13 @@ def triton_flash_attn_fn(
     query,
     key,
     value,
-    n_heads,
+    heads,
     past_key_value=None,
     softmax_scale=None,
-    attn_bias=None,
+    bias=None,
     key_padding_mask=None,
-    is_causal=False,
-    dropout_p=0.0,
+    causal=False,
+    dropout=0.0,
     training=False,
     needs_weights=False,
     multiquery=False,
@@ -469,13 +469,13 @@ def triton_flash_attn_fn(
 
         past_key_value = (key, value)
 
-    if attn_bias is not None:
+    if bias is not None:
         # clamp to 0 necessary for torch 2.0 compile()
-        _s_q = max(0, attn_bias.size(2) - query.size(1))
-        _s_k = max(0, attn_bias.size(3) - key.size(1))
-        attn_bias = attn_bias[:, :, _s_q:, _s_k:]
+        _s_q = max(0, bias.size(2) - query.size(1))
+        _s_k = max(0, bias.size(3) - key.size(1))
+        bias = bias[:, :, _s_q:, _s_k:]
 
-    if dropout_p:
+    if dropout:
         raise NotImplementedError(
             'Dropout not implemented for attn_impl: triton.')
 
@@ -488,32 +488,32 @@ def triton_flash_attn_fn(
             'Propagating key_padding_mask to the attention module ' +\
             'and applying it within the attention module can cause ' +\
             'unnecessary computation/memory usage. Consider integrating ' +\
-            'into attn_bias once and passing that to each attention ' +\
+            'into bias once and passing that to each attention ' +\
             'module instead.'
         )
         b_size, s_k = key_padding_mask.shape[:2]
 
-        if attn_bias is None:
-            attn_bias = query.new_zeros(b_size, 1, 1, s_k)
+        if bias is None:
+            bias = query.new_zeros(b_size, 1, 1, s_k)
 
-        attn_bias = attn_bias.masked_fill(
+        bias = bias.masked_fill(
             ~key_padding_mask.view((b_size, 1, 1, s_k)),
             torch.finfo(query.dtype).min)
 
-    query = rearrange(query, 'b s (h d) -> b s h d', h=n_heads)
-    key = rearrange(key, 'b s (h d) -> b s h d', h=1 if multiquery else n_heads)
+    query = rearrange(query, 'b s (h d) -> b s h d', h=heads)
+    key = rearrange(key, 'b s (h d) -> b s h d', h=1 if multiquery else heads)
     value = rearrange(value,
                       'b s (h d) -> b s h d',
-                      h=1 if multiquery else n_heads)
+                      h=1 if multiquery else heads)
 
     if multiquery:
         # necessary to repeat instead of expand tensor because
         # output contains NaN in edge cases such as with head dimension = 8
-        key = key.repeat(1, 1, n_heads, 1)
-        value = value.repeat(1, 1, n_heads, 1)
+        key = key.repeat(1, 1, heads, 1)
+        value = value.repeat(1, 1, heads, 1)
 
-    reset_is_causal = _reset_is_causal(query.size(1), key.size(1), is_causal)
-    attn_output = flash_attn_func(query, key, value, attn_bias, reset_is_causal,
+    reset_causal = _reset_causal(query.size(1), key.size(1), causal)
+    attn_output = flash_attn_func(query, key, value, bias, reset_causal,
                                   softmax_scale)
 
     output = attn_output.view(*attn_output.shape[:2], -1)
@@ -531,7 +531,7 @@ class MultiHeadAttention(nn.Module):
     def __init__(
         self,
         d_model: int,
-        n_heads: int,
+        heads: int,
         attn_impl: str = 'triton',
         clip_qkv: Optional[float] = None,
         qk_ln: bool = False,
@@ -549,11 +549,11 @@ class MultiHeadAttention(nn.Module):
         self.qk_ln = qk_ln
 
         self.d_model = d_model
-        self.n_heads = n_heads
+        self.heads = heads
         self.softmax_scale = softmax_scale
         if self.softmax_scale is None:
-            self.softmax_scale = 1 / math.sqrt(self.d_model / self.n_heads)
-        self.attn_dropout_p = attn_pdrop
+            self.softmax_scale = 1 / math.sqrt(self.d_model / self.heads)
+        self.attn_dropout = attn_pdrop
 
         fc_kwargs = {}
         if fc_type != 'te':
@@ -605,9 +605,9 @@ class MultiHeadAttention(nn.Module):
         self,
         x,
         past_key_value=None,
-        attn_bias=None,
-        attention_mask=None,
-        is_causal=True,
+        bias=None,
+        mask=None,
+        causal=True,
         needs_weights=False,
     ):
         qkv = self.Wqkv(x)
@@ -617,7 +617,7 @@ class MultiHeadAttention(nn.Module):
 
         query, key, value = qkv.chunk(3, dim=2)
 
-        key_padding_mask = attention_mask
+        key_padding_mask = mask
 
         if self.qk_ln:
             # Applying layernorm to qk
@@ -629,13 +629,13 @@ class MultiHeadAttention(nn.Module):
             query,
             key,
             value,
-            self.n_heads,
+            self.heads,
             past_key_value=past_key_value,
             softmax_scale=self.softmax_scale,
-            attn_bias=attn_bias,
+            bias=bias,
             key_padding_mask=key_padding_mask,
-            is_causal=is_causal,
-            dropout_p=self.attn_dropout_p,
+            causal=causal,
+            dropout=self.attn_dropout,
             training=self.training,
             needs_weights=needs_weights,
         )
@@ -653,7 +653,7 @@ class MultiQueryAttention(nn.Module):
     def __init__(
         self,
         d_model: int,
-        n_heads: int,
+        heads: int,
         attn_impl: str = 'triton',
         clip_qkv: Optional[float] = None,
         qk_ln: bool = False,
@@ -671,12 +671,12 @@ class MultiQueryAttention(nn.Module):
         self.qk_ln = qk_ln
 
         self.d_model = d_model
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
+        self.heads = heads
+        self.head_dim = d_model // heads
         self.softmax_scale = softmax_scale
         if self.softmax_scale is None:
             self.softmax_scale = 1 / math.sqrt(self.head_dim)
-        self.attn_dropout_p = attn_pdrop
+        self.attn_dropout = attn_pdrop
 
         fc_kwargs = {}
         if fc_type != 'te':
@@ -729,9 +729,9 @@ class MultiQueryAttention(nn.Module):
         self,
         x,
         past_key_value=None,
-        attn_bias=None,
-        attention_mask=None,
-        is_causal=True,
+        bias=None,
+        mask=None,
+        causal=True,
         needs_weights=False,
     ):
         qkv = self.Wqkv(x)
@@ -742,7 +742,7 @@ class MultiQueryAttention(nn.Module):
         query, key, value = qkv.split(
             [self.d_model, self.head_dim, self.head_dim], dim=2)
 
-        key_padding_mask = attention_mask
+        key_padding_mask = mask
 
         if self.qk_ln:
             # Applying layernorm to qk
@@ -754,13 +754,13 @@ class MultiQueryAttention(nn.Module):
             query,
             key,
             value,
-            self.n_heads,
+            self.heads,
             past_key_value=past_key_value,
             softmax_scale=self.softmax_scale,
-            attn_bias=attn_bias,
+            bias=bias,
             key_padding_mask=key_padding_mask,
-            is_causal=is_causal,
-            dropout_p=self.attn_dropout_p,
+            causal=causal,
+            dropout=self.attn_dropout,
             training=self.training,
             needs_weights=needs_weights,
             multiquery=True,
