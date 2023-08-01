@@ -5,7 +5,7 @@ Multi Query Attention (MQA) is an innovative Python package that offers an effic
 ## Installation
 Use the package manager [pip](https://pip.pypa.io/en/stable/) to install MultiQueryAttention. You can do this via the following command:
 ```python
-pip install MultiQueryAttention
+pip install mqa
 ```
 
 ## Usage
