@@ -12,7 +12,10 @@ pip install mqa
 Here is a simple example of how to initialize and use the `MultiQueryAttention` class.
 
 ```python
+import torch
 from mqa import MultiQueryAttention
+
+x = torch.rand(4, 10, 512).to('cuda')
 
 attn = MultiQueryAttention(
     d_model=512,
